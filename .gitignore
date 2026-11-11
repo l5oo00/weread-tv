@@ -18,3 +18,4 @@ signing.properties
 *.keystore
 *.jks
 keystore/
+.workbuddy/
