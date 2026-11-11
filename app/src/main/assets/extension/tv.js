@@ -241,13 +241,29 @@
     return list[0];
   }
 
+  /* 整块书卡（.wr_index_mini_shelf_card 这类非 <a> 元素）当焦点时，卡片内部的
+     <a href="/web/reader/..."> 不在候选列表里：bookTargets 特意排除嵌套链接，
+     避免同一张卡被导航两次。若照样给它加 __tv_muted(pointer-events:none)，
+     壳层按卡片中心注入的真实触摸会穿透链接落到外层 div，页面收不到点击 ——
+     首页「继续阅读」在焦点模式下按 OK 没反应，切自由光标（clearMuted）才行。
+     这类内部链接不 mute，tabindex=-1 仍保留，方向键不会误入。 */
+  function insideCardLink(el, list) {
+    if ((el.tagName || '').toLowerCase() !== 'a' || !el.getAttribute('href')) return false;
+    for (var k = 0; k < list.length; k++) {
+      var card = list[k];
+      if (card !== el && (card.tagName || '').toLowerCase() !== 'a' &&
+          card.contains && card.contains(el)) return true;
+    }
+    return false;
+  }
+
   function muteExcept(list, modal) {
     var els = document.querySelectorAll('a[href],button,input,textarea,select,[tabindex],[role="button"]');
     for (var j = 0; j < els.length; j++) {
       var el = els[j];
       if (modal && (modal === el || modal.contains(el))) continue;
       el.setAttribute('tabindex', '-1');
-      if (list.indexOf(el) < 0) el.classList.add('__tv_muted');
+      if (list.indexOf(el) < 0 && !insideCardLink(el, list)) el.classList.add('__tv_muted');
       else el.classList.remove('__tv_muted');
     }
   }
