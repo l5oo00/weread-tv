@@ -1,0 +1,173 @@
+name: Release APK
+
+# 打 v* tag 时构建两个架构的 release APK 并发布到 GitHub Releases。
+# 普通 push 只跑 build.yml（debug 包 + Actions artifact），不生成正式发布。
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+# 同一 tag 的并发 run 排队而不是取消：发布流程中断比多等几分钟更麻烦。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # 与 build.yml 保持一致，固定镜像避免 Ubuntu 26 迁移导致 SDK 环境变化
+    runs-on: ubuntu-24.04
+    steps:
+      # 第三方 action 一律 pin 到 commit SHA（注释保留可读版本号，便于日后升级）
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          fetch-depth: 0        # 生成 release notes 需要拿到历史 tag
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd  # v4
+
+      - name: Accept SDK licenses
+        run: yes | sdkmanager --licenses || true
+
+      - name: Install SDK packages
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # 仓库 wrapper 指向腾讯云镜像（国内 clone 友好），境外 runner 切回官方源。
+      # distributionSha256Sum 不变：镜像与官方是同一个 zip，wrapper 仍会校验。
+      # 只改 job 检出的副本，不回写仓库。与 build.yml 保持一致。
+      - name: Use official Gradle distribution on CI
+        run: sed -i 's#mirrors.cloud.tencent.com/gradle/#services.gradle.org/distributions/#' gradle/wrapper/gradle-wrapper.properties
+
+      # 发布产物必须可验证：缺签名密钥时直接失败，绝不现场随机生成一把，
+      # 否则同一 tag 每次重跑都可能产出不同签名的 APK，用户无法覆盖安装/验包。
+      - name: Prepare signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ] || [ -z "$STORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "::error::未配置签名 Secrets（ANDROID_KEYSTORE_BASE64 / ANDROID_STORE_PASSWORD / ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD），拒绝以随机密钥发布"
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          {
+            echo "STORE_FILE=$RUNNER_TEMP/release.keystore"
+            echo "STORE_PASSWORD=$STORE_PASSWORD"
+            echo "KEY_ALIAS=$KEY_ALIAS"
+            echo "KEY_PASSWORD=$KEY_PASSWORD"
+          } > signing.properties
+          echo "使用仓库 Secrets 中的签名密钥"
+
+      - name: Check content script & extension manifest
+        run: |
+          node --check app/src/main/assets/extension/tv.js
+          python3 -m json.tool app/src/main/assets/extension/manifest.json > /dev/null
+
+      - name: Unit tests (pure JVM logic)
+        run: ./gradlew testV7aDebugUnitTest --no-daemon
+
+      - name: Android lint (v7a debug)
+        run: ./gradlew lintV7aDebug --no-daemon
+
+      - name: Build release APKs (v7a + arm64)
+        run: ./gradlew assembleV7aRelease assembleArm64Release --no-daemon
+
+      - name: Prepare release assets
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/v7a/release/app-v7a-release.apk   "dist/WeReadTV-${TAG}-v7a.apk"
+          cp app/build/outputs/apk/arm64/release/app-arm64-release.apk "dist/WeReadTV-${TAG}-arm64.apk"
+          ls -lh dist/
+
+      # 出包后、发布前做两件事：apksigner 确认包确实带有效签名，
+      # 生成 SHA256SUMS 供用户离线校验下载完整性。
+      - name: Verify APK signatures and write checksums
+        run: |
+          APKSIGNER="$ANDROID_HOME/build-tools/34.0.0/apksigner"
+          for apk in dist/*.apk; do
+            "$APKSIGNER" verify "$apk"
+            echo "签名校验通过: $apk"
+          done
+          echo '--- 发布证书指纹 ---'
+          "$APKSIGNER" verify --print-certs dist/*-v7a.apk | grep -E 'DN:|SHA-256 digest'
+          (cd dist && sha256sum *.apk > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - name: Generate release notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          PREV=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
+          {
+            echo "## 下载哪个包"
+            echo
+            echo "| 文件 | 适用设备 |"
+            echo "|---|---|"
+            echo "| \`WeReadTV-${TAG}-v7a.apk\` | 32 位老盒子 / 多数电视（armeabi-v7a） |"
+            echo "| \`WeReadTV-${TAG}-arm64.apk\` | 64 位新电视（arm64-v8a） |"
+            echo
+            echo "不确定 CPU 架构就先试 v7a（多数 64 位 Android 仍兼容 32 位），装不上再换 arm64。"
+            echo "安装：把 APK 传到电视上打开安装即可（U 盘、文件管理器、手机传文件等都行）；"
+            echo "不熟悉操作可以让 AI 助手一步步带你装。装过早期内测包（debug 签名）的请先卸载："
+            echo "签名不同无法覆盖安装，卸载会清登录态；之后同签名版本可直接覆盖安装、保留登录态。"
+            echo
+            echo "> 单个 APK 约 130MB（arm64 包更大），其中约 120MB 是 GeckoView 浏览器内核，属正常体积。"
+            echo
+            echo "## 校验下载"
+            echo
+            echo "发布页附 \`SHA256SUMS\`，下载后先校验完整性："
+            echo
+            echo '```bash'
+            echo 'sha256sum -c SHA256SUMS'
+            echo "apksigner verify --print-certs WeReadTV-${TAG}-v7a.apk"
+            echo '```'
+            echo
+            echo "发布签名使用项目专用、离线保管的 release keystore，证书 SHA-256："
+            echo "\`36c5979a228b4dcb288b0e0bfd3fa7c3b056a1136b37d547184c739253209f62\`"
+            echo "（DN: CN=WeReadTV, O=WeReadTV, C=CN）。指纹对不上请勿安装，详见 SECURITY.md。"
+            echo
+            if [ -n "$PREV" ]; then
+              echo "## 自 ${PREV} 以来的变更"
+              echo
+              git log --pretty=format:'- %s (%h)' "$PREV..HEAD"
+              echo
+            else
+              echo "## 本次变更"
+              echo
+              git log --pretty=format:'- %s (%h)' -20 HEAD
+              echo
+            fi
+          } > release-notes.md
+          cat release-notes.md
+
+      # 直接用 runner 自带的 gh CLI，不引第三方 action，避免又踩到版本落后于
+      # runner 的坑（setup-android v3 就是这样挂的）。
+      # 同名 tag 重推时拒绝 --clobber：静默替换已发布 APK 会让用户下到不同签名的包。
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::Release $TAG 已存在，拒绝覆盖已发布产物。如需重发，请先手动删除该 Release 或使用新 tag。"
+            exit 1
+          fi
+          gh release create "$TAG" dist/*.apk dist/SHA256SUMS \
+            --title "WeReadTV $TAG" \
+            --notes-file release-notes.md \
+            --verify-tag

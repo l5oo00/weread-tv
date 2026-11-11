@@ -1,0 +1,79 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+# 构建与上传 Artifacts 只需读权限；PR 场景尤其不能给写权限
+permissions:
+  contents: read
+
+# 同一分支连续 push 时取消旧 run，避免排队占满 runner
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # 固定镜像：ubuntu-latest 自 2026-10 起滚动迁移到 Ubuntu 26，
+    # 预装 Android SDK 路径/版本会变，固定 24.04 避免 CI 无故挂掉。
+    runs-on: ubuntu-24.04
+    steps:
+      # 第三方 action 一律 pin 到 commit SHA（注释保留可读版本号，便于日后升级），
+      # 避免上游可变 tag 被改写后悄悄改变构建行为。
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # v3 会请求已被 Google 下线的废弃包 'tools'（Failed to find package 'tools'），
+      # 在新版 runner 上直接失败；v4 默认只装 platform-tools 并使用 node24。
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd  # v4
+
+      - name: Accept SDK licenses
+        run: yes | sdkmanager --licenses || true
+
+      - name: Install SDK packages
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # 仓库 wrapper 指向腾讯云镜像，方便国内 clone 首次构建；但 GitHub runner
+      # 在境外，访问该镜像不稳定，所以仅 CI 这里临时切回官方发行源。
+      # distributionSha256Sum 不受影响（镜像与官方是同一个 zip），wrapper 仍会校验。
+      # 只改 job 检出的临时副本，不回写仓库。
+      - name: Use official Gradle distribution on CI
+        run: |
+          sed -i 's#mirrors.cloud.tencent.com/gradle/#services.gradle.org/distributions/#' gradle/wrapper/gradle-wrapper.properties
+          grep distributionUrl gradle/wrapper/gradle-wrapper.properties
+
+      # 纯静态门禁：脚本语法与扩展清单格式，失败就不要往下构建
+      - name: Check content script & extension manifest
+        run: |
+          node --check app/src/main/assets/extension/tv.js
+          python3 -m json.tool app/src/main/assets/extension/manifest.json > /dev/null
+
+      - name: Unit tests (pure JVM logic)
+        run: ./gradlew testV7aDebugUnitTest --no-daemon
+
+      - name: Android lint (v7a debug)
+        run: ./gradlew lintV7aDebug --no-daemon
+
+      - name: Build debug APKs (v7a + arm64)
+        run: ./gradlew assembleV7aDebug assembleArm64Debug --no-daemon
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
+        with:
+          name: weread-tv-apks
+          path: app/build/outputs/apk/**/debug/*.apk
+          retention-days: 30

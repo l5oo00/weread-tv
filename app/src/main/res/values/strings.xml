@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WeRead</string>
+
+    <!-- 模式切换提示。放进资源便于本地化，也避免文案散落在按键分支里 -->
+    <string name="hint_free">自由光标 · 方向键移动，OK 点击，菜单键滚动，返回键退出</string>
+    <string name="hint_scroll">滚动模式 · 方向键滚动，OK 点击，返回键回自由光标</string>
+    <string name="hint_read">阅读模式 · 上下键翻页，OK 焦点，菜单键光标</string>
+    <string name="hint_books">焦点模式 · 方向键切换，OK 点击，菜单键光标</string>
+    <string name="hint_focus">焦点模式 · 方向键切换，OK 点击，返回键退出</string>
+</resources>

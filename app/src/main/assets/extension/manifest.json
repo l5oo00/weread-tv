@@ -1,0 +1,29 @@
+{
+  "manifest_version": 2,
+  "name": "weread-tv-shell",
+  "version": "2.7",
+  "description": "WeReadTV 页面适配层：焦点导航 / 自由光标 / 四向滚动 / 命中定位。以 content script 形式由引擎官方机制注入。",
+  "content_scripts": [
+    {
+      "matches": [
+        "*://weread.qq.com/*",
+        "*://*.weread.qq.com/*"
+      ],
+      "js": [
+        "tv.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "permissions": [
+    "nativeMessaging",
+    "nativeMessagingFromContent",
+    "geckoViewAddons"
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "weread-tv@shell.local"
+    }
+  }
+}

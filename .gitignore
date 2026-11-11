@@ -1,0 +1,20 @@
+# Gradle / Android 构建产物
+.gradle/
+.kotlin/
+build/
+*/build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+
+# 编译产物不入库，自行构建：./gradlew assembleV7aDebug
+*.apk
+captures/
+.cxx/
+
+# 发布签名配置（含密钥，绝不入库）
+signing.properties
+*.keystore
+*.jks
+keystore/

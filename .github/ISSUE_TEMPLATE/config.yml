@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 使用前先看 README
+    url: https://github.com/l5oo00/weread-tv#readme
+    about: 安装、键位表、选包与已知限制都在这里
+  - name: 技术内幕与踩坑记录
+    url: https://github.com/l5oo00/weread-tv/blob/main/docs/tech-notes.md
+    about: 按键与页面适配相关问题，建议先看状态机与命中定位两节
+  - name: 安全问题请私下报告
+    url: https://github.com/l5oo00/weread-tv/blob/main/SECURITY.md
+    about: 不要在公开 Issue 里贴漏洞细节、Cookie 或登录态

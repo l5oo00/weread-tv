@@ -1,0 +1,8 @@
+# GeckoView 启动配置（YAML）。
+# browser.viewport.desktopWidth：VIEWPORT_MODE_DESKTOP 下的布局宽（默认 980）。
+# 设为 1440 后全站按 1440 CSS px 排版，渲染缩放比 = 屏宽 / 1440 自动换算
+# （1080p 电视约 1.33 倍）：首页/书架/榜单原生四列，阅读页自动排左右双页
+# —— 全站一套方案，替代旧 WebView 版的 meta viewport 注入
+#（Gecko 的 MVM 会重置 meta，不可靠）。想改字号大小调这里一处即可。
+prefs:
+  browser.viewport.desktopWidth: 1440
