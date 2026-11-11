@@ -32,6 +32,129 @@
 (function () {
   'use strict';
   var V = 13;
+
+  /* ==== 字体：熔断自愈 + 排版后补排 ====
+   *
+   * 站点阅读页 mounted 里 Promise.race([warmUp(), 10 秒定时]) 决定 ignoreFont：
+   * warmUp 没在 10 秒内跑完就置 true（「字体系统坏了」），之后 changeFontFamily /
+   * handleChangeFont / drawPage 开头全是 if (ignoreFont) return，点字体连请求都不发。
+   * 这台电视 warmUp 要 33 秒，实测 5 次加载 4 次误判。
+   *
+   * 1) 熔断自愈：读 ignoreFont 时若 fontProvider.localFonts 已有内容就改回 false。
+   *    warmUp 真挂了 localFonts 永远是空数组，站点降级照旧 —— 不写死 false。
+   * 2) 排版补排：正文是 canvas 画的，字体串来自排版产物；canvas 不等解码就同步
+   *    回退系统字体并画死，而站点只在换字体时 layout、不会补。所以包住 layout：
+   *    照常排版（看到的是回退字体），等这次要用的 face decoded 了再补排一次。
+   *    不阻塞排版，代价是字体晚到时会先显示系统字体、再跳成目标字体。
+   */
+  try {
+    if (!window.__tvFontShim) {
+      window.__tvFontShim = 1;
+      var __tvFont = function () {
+        var dp = Object.defineProperty;
+        window.__tvFontOn = { at: Math.round(performance.now()), rs: document.readyState };   // 注入标记，调试用
+
+        /* 用户选的字体；'wr_default_font' 表示没设 */
+        function savedFont() {
+          try {
+            var o = JSON.parse(localStorage.getItem('wrLocalSetting') || '{}');
+            var f = (o && o.fontFamily) || '';
+            return f === 'wr_default_font' ? '' : f;
+          } catch (e) { return ''; }
+        }
+
+        /* 站点注入的 @font-face 就用字体 id 当 family。同一 family 可能有多条
+           （按 unicode-range 分片），要全部 decoded 才不会中途回退 */
+        function faceSt(fam) {
+          var set = document.fonts, n = 0, pend = 0;
+          if (!set || !set.forEach) return 'noface';
+          set.forEach(function (f) {
+            if (f.family.replace(/^["']|["']$/g, '') !== fam) return;
+            n++;
+            if (f.status !== 'loaded' && f.status !== 'error') pend++;
+          });
+          return n ? (pend ? 'loading' : 'loaded') : 'noface';
+        }
+
+        /* face 停在 unloaded 不会自己加载，主动踢一脚（实测踢完 1.2 秒 loaded） */
+        function kick(fam) {
+          try { document.fonts.load('16px "' + fam + '"'); } catch (e) {}
+        }
+
+        /* 常态催解码：选中的字体没 decoded 就每秒踢一次（没注册时是空操作） */
+        setInterval(function () {
+          var fam = savedFont();
+          if (fam && faceSt(fam) !== 'loaded') kick(fam);
+        }, 1000);
+
+        /* 包住每个 reader 实例的 layout，不等待：照常排版（字体没就绪时 canvas 会
+           回退系统字体），等 face decoded 了再补排一次换成正确的 */
+        function gate(vm) {
+          if (vm.__tvFontGate || typeof vm.layout !== 'function') return;
+          vm.__tvFontGate = 1;
+          var orig = vm.layout, fixed = '';
+
+          /* 补排：站点那次 layout 可能被它的 chapterContentState 门挡掉，所以
+             1.5 秒后再确认一次，最多两次。一律用闭包 vm，站点给的 this 不可信 */
+          function mend(fam) {
+            if (vm.__tvMend === fam) return;
+            vm.__tvMend = fam;
+            var t0 = Date.now(), tries = 0;
+            (function tick() {
+              if (savedFont() !== fam) { vm.__tvMend = ''; return; }   // 期间又换了字体
+              if (faceSt(fam) === 'loaded') {
+                if (++tries > 2) { vm.__tvMend = ''; return; }
+                fixed = fam;
+                try { vm.layout(); } catch (e) {}
+                setTimeout(tick, 1500);
+                return;
+              }
+              if (Date.now() - t0 > 60000) { vm.__tvMend = ''; return; }
+              setTimeout(tick, 250);
+            })();
+          }
+
+          vm.layout = function () {
+            var r = orig.apply(vm, arguments), fam = savedFont();
+            if (fam && fam !== fixed && faceSt(fam) !== 'loaded') mend(fam);
+            return r;
+          };
+        }
+
+        Object.defineProperty = function (o, k, d) {
+          if (k === 'ignoreFont' && d && typeof d.get === 'function' &&
+              typeof d.set === 'function') {
+            var raw = d;
+            gate(o);   // data 初始化时 methods 已就位，vm.layout 已经存在
+            d = {
+              configurable: true, enumerable: true,
+              /* 读的时候顺手自愈：字体库真有内容了就改回 false。写回走 raw.set，
+                 保留 Vue 的响应式；localFonts 还是空数组就一动不动 */
+              get: function () {
+                var v = raw.get.call(this);
+                if (v === true) {
+                  var p = this.$refs && this.$refs.fontProvider;
+                  if (p && p.localFonts && p.localFonts.length) {
+                    raw.set.call(this, false);
+                    return false;
+                  }
+                }
+                return v;
+              },
+              set: function (v) { raw.set.call(this, v); }
+            };
+          }
+          return dp.call(Object, o, k, d);
+        };
+      };
+      var __tvFontS = document.createElement('script');
+      __tvFontS.textContent = '(' + __tvFont.toString() + ')();';
+      (document.documentElement || document.head).appendChild(__tvFontS);
+      __tvFontS.remove();
+    }
+  } catch (e) {}
+  /* ==== 字体补丁结束 ==== */
+
   if (window.__tv && window.__tv.v === V) { window.__tv.refresh(); return; }
 
   var BOOK_MIN_W = 90, BOOK_MIN_H = 46;

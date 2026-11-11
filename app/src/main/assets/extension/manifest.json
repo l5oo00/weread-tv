@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "weread-tv-shell",
-  "version": "2.7",
+  "version": "2.8",
   "description": "WeReadTV 页面适配层：焦点导航 / 自由光标 / 四向滚动 / 命中定位。以 content script 形式由引擎官方机制注入。",
   "content_scripts": [
     {
