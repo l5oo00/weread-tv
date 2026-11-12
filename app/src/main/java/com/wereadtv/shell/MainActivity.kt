@@ -76,10 +76,12 @@ class MainActivity : Activity() {
     private var pendingUpEvent: MotionEvent? = null
 
     /* JS 上报的点击点逻辑坐标 [x, y, innerWidth]：
-       cursor = 自由光标位置；focus = 焦点元素中心。各模式 OK 键统一
-       由壳层注入真实触摸（isTrusted），合成事件过不了页面的反自动化守卫 */
+       cursor = 自由光标位置；focus = 焦点元素中心；close = 关当前弹层要点的位置
+       （有返回箭头的面板给返回键，没有的给关闭键或遮罩空白处）。
+       各模式 OK 键统一由壳层注入真实触摸（isTrusted），合成事件过不了页面的反自动化守卫 */
     private var cursorPt: FloatArray? = null
     private var focusPt: FloatArray? = null
+    private var closePt: FloatArray? = null
 
     companion object {
         private const val TAG = "WeReadTV"
@@ -269,12 +271,17 @@ class MainActivity : Activity() {
                     logD("modal=$modalOpen")
                 }
                 "point" -> {
+                    val x = message.optDouble("x", 0.0).toFloat()
                     val pt = floatArrayOf(
-                        message.optDouble("x", 0.0).toFloat(),
+                        x,
                         message.optDouble("y", 0.0).toFloat(),
                         message.optDouble("w", 1440.0).toFloat())
-                    if (message.optString("kind") == "cursor") cursorPt = pt
-                    else focusPt = pt
+                    when (message.optString("kind")) {
+                        "cursor" -> cursorPt = pt
+                        // x < 0 = 弹层已关，别留旧坐标给下一次返回键
+                        "close" -> closePt = if (x < 0) null else pt
+                        else -> focusPt = pt
+                    }
                 }
                 else -> logD("js: $message")
             }
@@ -396,10 +403,18 @@ class MainActivity : Activity() {
     }
 
     /**
-     * 返回键：先关弹窗；只有首页才 finish()。
-     * 阅读页 → 进书前的浏览页；其它 → 首页；首页 → 退出。
+     * 返回键：阅读页弹层 → 临时态栈 → 关弹窗 / 页面导航 / finish。
+     * 优先级见 BackRule。
      */
     private fun handleBack() {
+        /* 阅读页弹层（目录/书评/字体/AI/笔记…）：JS 已把「开着」和「该点哪儿」
+           同步过来，这里按坐标注入真实触摸关掉它。面板里的按钮有 isTrusted 守卫，
+           合成点击无效；有返回箭头的面板点返回，没有的点关闭/遮罩 */
+        if (BackRule.closePanelFirst(mode, isReadingPage(), modalOpen)) {
+            logD("BACK close panel pt=${closePt?.joinToString()}")
+            if (closePt != null) injectTap(closePt) else sendToJs(jsCommand("closeModal"))
+            return
+        }
         /* 临时态栈：每次返回只退一层，退出 SCROLL 不会顺带退出 FREE；
            null = 没有临时态可退，继续走关弹窗 / 页面导航 / finish */
         val back = ModeStack.onBack(mode, isReadingPage())

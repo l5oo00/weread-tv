@@ -62,6 +62,20 @@ object ModeStack {
     }
 }
 
+/**
+ * 返回键优先级（阅读页）：滚动模式 → 页面弹层 → 临时态栈 → 页面导航。
+ *
+ * 弹层必须压过「退出自由光标 / 焦点模式」：目录、书评、字体这些面板都是在
+ * 光标 / 焦点模式下点开的，如果返回先退模式，面板还留在屏幕上，得重新呼出
+ * 光标、再用方向键挪到 X 上才关得掉 —— 这正是要修掉的体验。
+ * 滚动模式例外：它是最外层的临时态，先退到自由光标再看弹层。
+ * 阅读页之外不看弹层（首页的登录弹窗有它自己的处理）。
+ */
+object BackRule {
+    fun closePanelFirst(mode: Mode, reading: Boolean, panelOpen: Boolean): Boolean =
+        panelOpen && reading && mode != Mode.SCROLL
+}
+
 /** 连按加速的状态。lastAt 取 SystemClock.uptimeMillis()，由调用方传入以便单测 */
 data class ScrollPace(val streak: Int = 0, val lastAt: Long = 0L)
 

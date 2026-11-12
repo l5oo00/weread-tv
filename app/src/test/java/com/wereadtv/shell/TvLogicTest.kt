@@ -59,6 +59,21 @@ class TvLogicTest {
     }
 
     @Test
+    fun panelClosesBeforeLeavingTemporaryModes() {
+        // 阅读页开着弹层：自由光标 / 焦点 / 阅读模式都先关弹层，不动模式
+        assertTrue(BackRule.closePanelFirst(Mode.FREE, reading = true, panelOpen = true))
+        assertTrue(BackRule.closePanelFirst(Mode.FOCUS, reading = true, panelOpen = true))
+        assertTrue(BackRule.closePanelFirst(Mode.READ, reading = true, panelOpen = true))
+        // 滚动模式优先级最高：先退回自由光标
+        assertFalse(BackRule.closePanelFirst(Mode.SCROLL, reading = true, panelOpen = true))
+        // 没弹层就按原逻辑退模式
+        assertFalse(BackRule.closePanelFirst(Mode.FREE, reading = true, panelOpen = false))
+        // 阅读页之外不看弹层：首页登录弹窗另有处理
+        assertFalse(BackRule.closePanelFirst(Mode.BOOKS, reading = false, panelOpen = true))
+        assertFalse(BackRule.closePanelFirst(Mode.FREE, reading = false, panelOpen = true))
+    }
+
+    @Test
     fun jsModeMapping() {
         assertEquals("read", ModeStack.jsMode(Mode.READ, reading = true))
         assertEquals("focus", ModeStack.jsMode(Mode.FOCUS, reading = true))

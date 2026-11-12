@@ -230,14 +230,101 @@
   }
   function modalOpen() { return !!visibleModal(); }
 
+  /* ==== 阅读页弹层：站点自己的面板 / 对话框 ====
+   * 目录、书评（列表 / 详情）、字体排版、AI 问书、笔记、搜索、各类 dialog 都是
+   * 站点自己的浮层，打开时统一铺一层 .wr_mask 遮罩。返回键要能关掉它们，
+   * 壳层必须先知道两件事：现在有没有弹层、该点哪儿。
+   *   ① 面板左上角有返回箭头的（书评详情这类子页）→ 点返回（回列表，不是关闭）；
+   *   ② 没有返回但有关闭按钮的 → 点关闭；
+   *   ③ 都没有的（目录、字体这类）→ 点遮罩空白处，也就是站点自己的「点外面关掉」。
+   * 面板里的按钮带 isTrusted 守卫，合成点击一律无效 —— 所以只回报坐标，
+   * 由壳层注入真实触摸，和右侧工具栏同一套办法。 */
+  var PANEL_ROOTS = '.reader_float_panel_container, .readerCatalog, .readerNotePanel, ' +
+    '.readerAIChatPanel, .font-panel-content, .search_panel, .top_reviews_panel, ' +
+    '.reviews_panel, .reader_common_dialog_wrapper, .wr_dialog';
+  var PANEL_CLOSE = '.reader_float_panel_header_closeBtn, ' +
+    '.search_panel_header_close_wrapper, .wr_dialog_closeButton';
+  var PANEL_BACK = '.reader_float_panel_header_backBtn';
+
+  /* 「开着」只能用「真的画出来了」判断：关掉的面板 DOM 常驻（容器 display:none），
+     遮罩则在 opacity 0/1 之间切，所以尺寸 + display + visibility + opacity 一起看。
+     遮罩单独也算——有些弹层（会员/支付类 dialog）只有遮罩没有上面这些容器。 */
+  function shown(el) {
+    if (!el) return false;
+    var r = el.getBoundingClientRect(), c = getComputedStyle(el);
+    return r.width > 20 && r.height > 20 && c.display !== 'none' &&
+      c.visibility !== 'hidden' && parseFloat(c.opacity) > 0.1;
+  }
+
+  function shownIn(sel, root) {
+    var list = (root || document).querySelectorAll(sel);
+    for (var i = 0; i < list.length; i++) if (shown(list[i])) return list[i];
+    return null;
+  }
+
+  /* 同一时刻只开一个弹层，返回 / 关闭按钮全局找「画出来的那个」就够 */
+  function readerPanel() {
+    var root = shownIn(PANEL_ROOTS), mask = shownIn('.wr_mask');
+    if (!root && !mask) return null;
+    return { root: root, mask: mask,
+             back: shownIn(PANEL_BACK), close: shownIn(PANEL_CLOSE) };
+  }
+
+  /* 关这一层要点的坐标；null = 没有弹层，或者找不到安全落点（居中铺满的弹窗） */
+  function panelClosePoint(p) {
+    if (!p) return null;
+    var el = p.back || p.close;
+    if (el) { var b = rectOf(el); return { x: b.cx, y: b.cy }; }
+    if (!p.mask) return null;
+    var m = rectOf(p.mask), r = p.root ? rectOf(p.root) : null, x;
+    /* 落点要在遮罩上、且不被面板盖住：面板靠右就点左侧，靠左就点右侧。
+       居中或铺满时遮罩会被面板整块压住，没有安全点，交给关闭按钮 */
+    if (r && r.x > 120) x = r.x / 2;
+    else if (r && r.x + r.w < innerWidth - 120) x = (r.x + r.w + innerWidth) / 2;
+    else return null;
+    return { x: x, y: Math.max(m.y + 20, Math.min(m.y + m.h - 20, m.cy)) };
+  }
+
+  /* 把「有没有弹层」+「关它点哪儿」同步给壳层。返回键要在按键当下就决定怎么走，
+     不能等异步回调（SPA 导航期间会延迟数秒）。
+     每次都重发，不做去重：壳层那边一旦漏掉一次坐标，返回键就会退化成合成的
+     .click()（面板按钮有 isTrusted 守卫，点不动），面板就关不掉了 —— 真机踩过。
+     p 允许由调用方先算好传进来（apply 里要用同一个结果做 mute 例外） */
+  var lastClosePt = null, panelTimer = 0;
+  function syncPanel(p) {
+    if (p === undefined) p = readerPanel();
+    syncModal(!!visibleModal() || !!p);
+    var pt = panelClosePoint(p);
+    if (pt) {
+      lastClosePt = pt;
+      reportPoint('close', pt.x, pt.y);
+    } else if (lastClosePt) {
+      lastClosePt = null;
+      bridgeSend({ ev: 'point', kind: 'close', x: -1, y: -1, w: innerWidth });
+    }
+    /* 面板开着就自己续一次：关合是动画（改 opacity / class），DOM 不会有
+       childList 变化，不续查的话「刚关掉」这个状态传不出去，下一次返回键会
+       被当成「还有弹层」白吞一下。关了就不再排，不常驻轮询 */
+    clearTimeout(panelTimer);
+    if (p) panelTimer = setTimeout(function () { syncPanel(); }, 400);
+  }
+
   /* 把「有没有弹窗」同步告诉 Activity。返回键要在按键当下就决定是关弹窗还是退出，
-     不能等 evaluateJavascript 的异步回调（SPA 导航期间回调会延迟数秒）。 */
-  var lastModalSent = null;
+     不能等 evaluateJavascript 的异步回调（SPA 导航期间回调会延迟数秒）。
+     每次 DOM 变化都重发：这个状态漏一次，返回键就走错分支（先按模式栈退出、
+     面板留在屏幕上），而一条几十字节的消息便宜到不值得去重。 */
   function syncModal(open) {
-    if (open === lastModalSent) return;
-    lastModalSent = open;
     bridgeSend({ ev: 'modal', open: open });
   }
+
+  /* 弹层的开合靠 class / 内联样式切显隐，DOM 结构根本不动 —— MutationObserver
+     只盯 childList，收不到这种变化，所以「点开目录」不会触发 apply()。
+     电视上的交互全部来自点击（含壳层注入的真实触摸），就在点击后补两次：
+     立即一次，350ms 一次（等开合动画把 opacity 走完）。不用轮询。 */
+  document.addEventListener('pointerup', function () {
+    setTimeout(function () { syncPanel(); }, 30);
+    setTimeout(function () { syncPanel(); }, 350);
+  }, true);
 
   /* 【不删元素、只断交互】以前把顶栏 / 搜索框 / 热搜整块 display:none，
      还顺手改了页面顶部的 padding —— 页面自己的布局被我们改掉，注入一落地就会
@@ -479,17 +566,22 @@
       ensureStyle();
       if (!isReader() && state.mode === 'read') state.mode = 'books';
 
+      var panel = readerPanel();
       if (state.mode === 'cursor') {
         /* 自由光标依赖 elementFromPoint 命中检测：__tv_muted 的 pointer-events:none
            会让命中结果跳到父级，所以光标模式下必须先清掉 mute，退出时再补回 */
         clearMuted();
         setFocus(null);
+        /* 弹层恰好都是在光标模式下开的，同步不能因为这里提前 return 而停掉 */
+        syncPanel(panel);
         return;
       }
       var modal = visibleModal();
-      syncModal(!!modal);
+      syncPanel(panel);
       var list = targets();
-      muteExcept(list, modal);
+      /* 弹层里的按钮不能 mute：__tv_muted 是 pointer-events:none，壳层注入的真实
+         触摸会直接穿过它落到父节点，返回/关闭就点不动了。只把弹层本身当例外 */
+      muteExcept(list, modal || (panel && (panel.root || panel.mask)));
       if (modal || !list.length) { setFocus(null); return; }
 
       /* 首启：没有橙框、也没有任何滚动，等用户自己按第一下 */
@@ -778,8 +870,18 @@
       else { cursorDestroy(); }
       apply();
     },
-    /* 返回键先关弹窗；返回 '1' 表示已消费，Activity 就不再后退 */
+    /* 返回键先关弹层；返回 '1' 表示已消费，Activity 就不再后退。
+       正常路径是壳层按 syncPanel 的坐标注入真实触摸，这里是兜底（合成点击，
+       面板按钮多数有 isTrusted 守卫，点不动时至少把遮罩/容器关掉） */
     closeModal: function () {
+      var p = readerPanel();
+      if (p) {
+        var el = p.back || p.close;
+        if (el) el.click();
+        else if (p.mask) p.mask.click();
+        syncPanel();
+        return '1';
+      }
       var m = visibleModal();
       if (!m) return '0';
       var btn = m.querySelector('.wr_login_modal_close, .wr_dialog_closeButton') ||
@@ -797,7 +899,8 @@
     },
     state: function () {
       return { mode: state.mode, reader: isReader(),
-               count: targets().length, modal: modalOpen(), virgin: state.virgin,
+               count: targets().length, modal: modalOpen(), panel: !!readerPanel(),
+               virgin: state.virgin,
                cursor: cursorEl ? { x: cursorX, y: cursorY } : null,
                focus: state.focusEl ? ((state.focusEl.textContent || '').trim().slice(0, 24)) : null,
                url: location.href };

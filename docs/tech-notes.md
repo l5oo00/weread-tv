@@ -74,6 +74,17 @@ Mode: BOOKS(浏览页默认) / READ(阅读页默认) / FOCUS(阅读页焦点导�
 FREE / SCROLL 都不跨页面保持。
 ```
 
+**阅读页返回键优先级**（`BackRule.closePanelFirst`）：滚动模式 → 页面弹层 → 模式栈 → 页面导航。
+弹层必须压过「退出光标 / 焦点模式」：目录、书评、字体这些面板都是在光标 / 焦点模式下点开的，
+返回先退模式的话面板还留在屏幕上，得重新呼出光标再挪到 X 上才关得掉。
+
+弹层由 JS 识别并算出「该点哪儿」随 `{ev:'point',kind:'close'}` 上报（`ev:'modal'` 表示有没有）：
+① 可见的 `.reader_float_panel_header_backBtn` → 点返回（书评详情这类子页回列表）；
+② 可见的关闭按钮（`_closeBtn` / `search_panel_header_close_wrapper` / `wr_dialog_closeButton`）；
+③ 都没有就点 `.wr_mask` 遮罩空白处（站点自己的「点外面关掉」），x 取面板外侧的中点。
+面板按钮有 isTrusted 守卫，只能靠壳层 `injectTap` 注真实触摸，所以是「上报坐标」而不是 JS 点。
+两个状态都**不去重、每次 DOM 变化重发**：漏一次就会退化成合成 `.click()`，面板关不掉（真机踩过）。
+
 - 阅读页翻页：合成 `ArrowLeft` / `ArrowRight` 键盘事件（页面原生监听）。
   壳侧有 110ms 翻页冷却、90ms 移动冷却防连发过冲。
 - 自由光标：方向键发 `{op:'cursorMove',dx,dy}`，**壳侧参数全是字符串，
