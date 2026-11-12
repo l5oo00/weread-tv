@@ -30,29 +30,35 @@
   `gvconfig.yaml`（`browser.viewport.desktopWidth: 1440`）+ `VIEWPORT_MODE_DESKTOP`
   + `USER_AGENT_MODE_DESKTOP`。这是引擎启动参数，页面碰不到、也不会被站点改掉。
 
-## 3. 适配层：内置 WebExtension content script
+## 3. 适配层：内置扩展 + 外置 tv.js 动态注册
 
 - `installBuiltIn("resource://android/assets/extension/")` 注册打包在 assets 里的
-  扩展，`tv.js` 以 `document_start` 由引擎官方机制加载，比任何手动加载都早、都稳。
-- **注册与首次 `loadUri` 是并行发起的，不要当成「先注册完再加载」**：
-  `installBuiltIn` 是异步回调，`session.loadUri(HOME)` 并不在它的成功回调里。
-  首屏文档可能早于扩展注册完成就开始加载，靠 `navigationDelegate` 的
-  `onLocationChange` + `MutationObserver` + `hashchange/popstate` 补发命令、
-  对齐模式；端口未连上时的命令也积压在 `pendingToJs` 里等 `onConnect` 补发。
-  因此不要把「首屏一定有适配层」归因于调用顺序，注册失败目前只记一条 debug 日志。
-- **native messaging 的 delegate 必须注册到 session 级 SessionController**：
-  全局 `ext.setMessageDelegate` 收不到 content script 的端口连接
-  （内部路由按 session 查 delegate，session=null 时 `onConnect` 永远不触发）。
-- 端口未连上时壳把命令积压在 `pendingToJs`，`onConnect` 后补发并对齐模式。
+  扩展。Gecko 把它解析成 `jar:file:///data/app/<pkg>/base.apk!/assets/...`
+  **直接从 APK 读**，不落盘到 profile，所以改应用私有目录碰不到扩展包内文件。
+- 因此 `manifest.json` 不再声明 `content_scripts`。改由 `bg.js` 在每次启动时调
+  `browser.contentScripts.register({matches, js:[{code}], runAt:'document_start'})`：
+  引擎把 `code` 转成 `blob:` URL，走和标准 content script 完全相同的注入管线，
+  `document_start` 与 `connectNative` 特权都保留（`FLAG_ALLOW_CONTENT_MESSAGING`
+  只看扩展权限 `nativeMessagingFromContent`，与脚本来源无关）。脚本全部内容来自
+  `/sdcard/Android/data/com.wereadtv.shell/files/tv.js`，`adb push` 直写、无需 root。
+- **改脚本只需两步**：`adb push tv.js /sdcard/Android/data/com.wereadtv.shell/files/tv.js`
+  → 重启 App。`register` 注册的是那一刻的代码快照，**只刷新页面不生效**。
+  APK 内 `assets/extension/tv.js` 只在首次启动（外部文件不存在时）当出厂种子，
+  之后运行时不再读；要换这份种子才需要重新打包。
+- **两条 native messaging 端口要分开**：content script 连 `weread_tv`，必须注册到
+  session 级 `SessionController`；background 连 `weread_tv_bg`，不关联 session，
+  走全局 `ext.setMessageDelegate`。壳侧 `port` 只指向前者（按键命令的接收方）。
+- **首页必须等 `ready` 再 `loadUri`**：content script 加不进已经开始加载的文档。
+  曾试过「`loadUri` 与注册并行、注册完再 `session.reload()`」，真机上 `ready` 来得
+  比首次导航提交还快，`reload()` 把还没提交的导航直接取消了，结果是纯白屏
+  （`onLocationChange` 一次都不触发）。现在 `onCreate` 不调 `loadUri`，等 background
+  注册完发 `{ev:'ready'}` 再 `loadHome()`；另挂 8 秒兜底，只为 background 起不来时
+  别白屏，兜底先跑过时 `ready` 到达改为 `reload()` 补上适配层。
+- 后续页面切换靠 `navigationDelegate` 的 `onLocationChange` + `MutationObserver` +
+  `hashchange/popstate` 对齐模式；端口未连上时的命令积压在 `pendingToJs` 等 `onConnect` 补发。
 
-**扩展更新（实测结论，别再当成硬约束）**：`manifest.json` 的 `version`
-（当前 2.7）只是 WebExtension 自身的版本标识。内置扩展随 APK 一起打包，
-`adb install -r` 覆盖安装（不清数据、保登录态）后，即使版本号没递增，
-新 `tv.js` 也会生效——滚动功能就是在 `manifest.json` 版本未递增、
-`tv.js` 已改动多次的情况下，用覆盖安装 + 真机按键 + 截图对比验证通过的。
-递增版本仍建议做，好处是能用
-`run-as com.wereadtv.shell cat files/mozilla/<profile>/extensions.json`
-核对实际激活的是哪一版，但它不是发布阻断项。
+**扩展版本**：`manifest.json` 的 `version`（当前 2.9）只是扩展自身标识，
+但也是 Gecko startupCache 的键之一，改 manifest 时递增更稳妥。
 
 ## 4. 按键状态机（MainActivity.kt / TvLogic.kt）
 

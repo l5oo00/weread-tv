@@ -28,9 +28,10 @@ import org.mozilla.geckoview.WebExtension
  * 无 root 不能替换 —— 所以把 GeckoView（Firefox 同款引擎，自带全部现代 Web 能力）
  * 打包进壳里，不再依赖系统 WebView。
  *
- * 注入方式（外壳优先原则）：tv.js 不再用 evaluateJavascript 手动注入，而是作为
- * WebExtension content script（document_start）由引擎官方机制加载；按键命令通过
- * native messaging 端口下发。网站内部逻辑零侵入（除 viewport 与四列那几条 CSS）。
+ * 注入方式（外壳优先原则）：tv.js 不再用 evaluateJavascript 手动注入，而是由
+ * 扩展 background 用 contentScripts.register（document_start）动态注册；脚本内容
+ * 来自 App 外部私有目录的 tv.js，改它只需 adb push + 重启，不用重新打包。
+ * 按键命令通过 native messaging 端口下发。网站内部逻辑零侵入（除 viewport 与四列那几条 CSS）。
  */
 class MainActivity : Activity() {
 
@@ -50,7 +51,15 @@ class MainActivity : Activity() {
     private lateinit var session: GeckoSession
     private lateinit var gv: GeckoView
     private var port: WebExtension.Port? = null
+    private var bgPort: WebExtension.Port? = null
     private val pendingToJs = mutableListOf<JSONObject>()
+    private var homeLoaded = false
+    private val homeFallback = Runnable { loadHome() }
+
+    /** tv.js 的唯一运行时真源：外部私有目录，adb push 可直写、无需 root */
+    private val tvScriptFile: java.io.File by lazy {
+        java.io.File(getExternalFilesDir(null), "tv.js")
+    }
 
     private var currentUrl: String? = null
     private var mode = Mode.BOOKS
@@ -132,13 +141,12 @@ class MainActivity : Activity() {
             }
         }
 
-        // installBuiltIn 是异步的，loadUri 不在注册成功的回调里：首屏文档可能
-        // 早于扩展注册完成就开始加载，靠 navigationDelegate + MutationObserver
-        // 补对齐模式、pendingToJs 补发命令。别把首屏适配归因于调用顺序，
-        // 详见 docs/tech-notes.md 第 3 节。
+        // content script 加不进已经开始加载的文档，所以首页必须等 background
+        // 把外置 tv.js 注册完（ready）再 loadUri；8 秒兜底只防注册失败时白屏。
+        // navigationDelegate + MutationObserver 仍负责后续页面切换的模式对齐。
+        installTvScript()
         session.open(runtime)
         registerExtension()
-        session.loadUri(SiteRules.HOME)
 
         gv = GeckoView(this)
         gv.setSession(session)
@@ -151,6 +159,7 @@ class MainActivity : Activity() {
         )
         window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.WHITE))
         gv.requestFocus()
+        window.decorView.postDelayed(homeFallback, 8000)
     }
 
     /** 注册打包在 assets 里的扩展：content script 注入 + native messaging 端口 */
@@ -164,6 +173,23 @@ class MainActivity : Activity() {
         return out.absolutePath
     }
 
+    /** 首次启动把 APK 内的 tv.js 拷到外部私有目录当出厂种子；之后这个文件
+     *  就是唯一真源，assets 里那份运行时不再读（改它请重新打包）。 */
+    private fun installTvScript() {
+        if (tvScriptFile.exists()) return
+        assets.open("extension/tv.js").use { input ->
+            tvScriptFile.outputStream().use { input.copyTo(it) }
+        }
+    }
+
+    /** 等外置脚本注册完再加载首页；兜底先跑过的话，ready 到达时改为 reload。 */
+    private fun loadHome() {
+        if (homeLoaded) return
+        homeLoaded = true
+        window.decorView.removeCallbacks(homeFallback)
+        session.loadUri(SiteRules.HOME)
+    }
+
     private fun registerExtension() {
         runtime.webExtensionController
             .installBuiltIn("resource://android/assets/extension/")
@@ -173,18 +199,53 @@ class MainActivity : Activity() {
                     // 派发线程由引擎决定；显式切回主线程（当前已是则立即执行）。
                     runOnUiThread {
                         if (ext != null) {
-                            // 关键：delegate 必须注册到 session 级 SessionController。
-                            // 全局 ext.setMessageDelegate 收不到 content script 的
-                            // 端口连接（内部路由按 session 查 delegate，全局注册
-                            // 时 session=null，onConnect 永远不触发，真机实测）。
+                            // 关键：content script 的 delegate 必须注册到 session 级
+                            // SessionController（内部路由按 session 查 delegate，
+                            // 全局注册时 session=null，onConnect 永远不触发，真机实测）。
                             session.webExtensionController
                                 .setMessageDelegate(ext, messageDelegate, "weread_tv")
+                            // background 不关联 session，它的端口走全局 delegate。
+                            ext.setMessageDelegate(bgDelegate, "weread_tv_bg")
                         }
                         logD("extension registered: ${ext?.id}")
                     }
                 },
                 { err -> logD("extension register FAIL: $err") }
             )
+    }
+
+    /** background 的端口与 content script 的端口分开：前者只负责注册脚本，
+     *  后者才是按键命令的接收方，不能互相覆盖 port。 */
+    private val bgDelegate = object : WebExtension.MessageDelegate {
+        override fun onConnect(p: WebExtension.Port) {
+            bgPort = p
+            p.setDelegate(bgPortDelegate)
+            logD("bg port connected")
+        }
+    }
+
+    private val bgPortDelegate = object : WebExtension.PortDelegate {
+        override fun onPortMessage(message: Any, p: WebExtension.Port) {
+            if (message !is JSONObject) return
+            when (message.optString("ev")) {
+                "needScript" -> {
+                    p.postMessage(JSONObject()
+                        .put("op", "script")
+                        .put("src", tvScriptFile.readText()))
+                    logD("tv.js sent (${tvScriptFile.length()} bytes)")
+                }
+                "ready" -> {
+                    logD("tv.js registered, homeLoaded=$homeLoaded")
+                    if (homeLoaded) session.reload() else loadHome()
+                }
+                "scriptError" -> logD("tv.js register FAIL: ${message.optString("error")}")
+            }
+        }
+
+        override fun onDisconnect(p: WebExtension.Port) {
+            logD("bg port disconnected")
+            if (bgPort === p) bgPort = null
+        }
     }
 
     private val messageDelegate = object : WebExtension.MessageDelegate {
@@ -622,6 +683,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        window.decorView.removeCallbacks(homeFallback)
         cancelPendingTapUp()   // 别让延迟的触摸落在已关闭的 session 上
         try {
             session.close()
