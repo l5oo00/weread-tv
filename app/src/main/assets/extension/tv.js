@@ -6,7 +6,7 @@
  *   JS → 壳：{ev:'modal',open}
  *   壳 → JS：{op:'move',dir} {op:'ok'} {op:'key',key,code} {op:'mode',mode}
  *            {op:'cursorMove',dx,dy} {op:'cursorClick'} {op:'scroll',dir,step}
- *            {op:'closeModal'}
+ *            {op:'pageV',dir} {op:'closeModal'}
  *
  * 【显示方案：缩放完全归壳，本脚本零布局干预】
  *   微信读书阅读页正文是 JS 画在 canvas 上的，font-size / textZoom / CSS zoom
@@ -820,6 +820,21 @@
         滚动逻辑（阅读器 canvas / 虚拟列表常监听 wheel）。三条互斥，一次
         按键只产生一段位移。光标有 pointer-events:none，不会挡住元素命中。
      步长 step（CSS 像素）由壳侧下发：单按小步，连按/长按逐级加速，横纵共用。 */
+  /* 元素自己能不能真的滚：光看 scrollHeight > clientHeight 不够 ——
+     overflow:visible 的容器内容溢出时高度关系照样成立，但 scrollBy 对它
+     完全无效（scrollTop 恒为 0）。之前这里少了 overflow 判断，滚动命令一路
+     命中阅读页某个 overflow:visible 的包裹层，scrollBy 无效后直接 return，
+     永远走不到 window.scrollBy —— 竖屏长页「滚不动」的根因。 */
+  function scrollable(node, dx, dy) {
+    var cs = getComputedStyle(node);
+    var oy = cs.overflowY, ox = cs.overflowX;
+    var vy = oy === 'auto' || oy === 'scroll';
+    var vx = ox === 'auto' || ox === 'scroll';
+    if (dy && vy && node.scrollHeight > node.clientHeight + 1) return true;
+    if (dx && vx && node.scrollWidth > node.clientWidth + 1) return true;
+    return false;
+  }
+
   function scrollAtCursor(dir, step) {
     step = parseInt(step, 10) || 72;
     var dx = dir === 'left' ? -step : dir === 'right' ? step : 0;
@@ -829,8 +844,7 @@
        不接管视口滚动，交给 window.scrollBy（scrollingElement）才可靠 */
     var el = document.elementFromPoint(cursorX, cursorY);
     while (el && el !== document.body && el !== document.documentElement) {
-      if ((dy && el.scrollHeight > el.clientHeight + 1) ||
-          (dx && el.scrollWidth > el.clientWidth + 1)) {
+      if (scrollable(el, dx, dy)) {
         el.scrollBy(dx, dy);
         return;
       }
@@ -852,6 +866,41 @@
           deltaX: dx, deltaY: dy, deltaMode: 0
         }));
     } catch (e) {}
+  }
+
+  /* ===================== 阅读模式：上下键 =====================
+     站点有两种排版：分页（横屏双栏，底下有「上一页/下一页」）和竖屏长页
+     （整章画在一张 canvas 上，文档可滚）。这里不去猜是哪一种 —— 直接试：
+     滚一屏，读回 scrollTop。
+       变了   → 确实是长页，滚动即成功；
+       没变   → 页面不可滚（分页排版）或者已到章末，转成翻页。
+     判据只依赖「引擎认不认这次滚动」，跟站点类名、DOM 结构、阅读设置项
+     都无关，改版也打不中；而且就算哪天 scrollTo 被站点拦掉，读回同样是
+     没动，照样落到翻页分支 —— 不会出现「按了没反应」的死角。
+     步长按 clientHeight 算（本机 810，innerHeight 是 902，用后者会滚到
+     94% 屏，重叠太少）。 */
+  var lastPageKeyAt = 0;
+  function pageVertical(dir) {
+    var se = document.scrollingElement || document.documentElement;
+    var down = dir === 'down';
+    var before = se.scrollTop;
+    var over = se.scrollHeight - se.clientHeight;
+    var dy = Math.round((se.clientHeight || innerHeight) * 0.85) * (down ? 1 : -1);
+    var target = Math.max(0, Math.min(before + dy, over));
+    if (target !== before) {
+      /* behavior:'instant' 明确要求立即跳，压过站点可能的
+         scroll-behavior:smooth；否则紧接着读 scrollTop 还是旧值，
+         会被自己误判成「没滚动」 */
+      try { window.scrollTo({ top: target, behavior: 'instant' }); }
+      catch (e) { window.scrollTo(0, target); }
+      if (se.scrollTop !== before) return;
+    }
+    /* 滚不动 → 翻页。长按会连发 repeat，这里自己节流，别翻页翻飞 */
+    var now = Date.now();
+    if (now - lastPageKeyAt < 350) return;
+    lastPageKeyAt = now;
+    if (down) webKey('ArrowRight', 39);
+    else webKey('ArrowLeft', 37);
   }
 
   function refresh() {
@@ -939,6 +988,8 @@
       case 'cursorMove':  cursorMove(parseInt(m.dx, 10) || 0, parseInt(m.dy, 10) || 0); break;
       case 'cursorClick': cursorClick(); break;
       case 'scroll':      scrollAtCursor(m.dir, m.step); break;
+      /* 阅读模式上下键：竖屏长页滚一屏，分页排版回退成翻页 */
+      case 'pageV':       pageVertical(m.dir); break;
       case 'ok':         activate(); break;
       case 'key':        webKey(m.key, m.code); break;   // 阅读页翻页：合成键盘事件
       /* 注意：setMode/closeModal/focusSelector 是 api 的属性不是独立函数，

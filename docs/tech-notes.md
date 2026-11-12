@@ -87,6 +87,24 @@ FREE / SCROLL 都不跨页面保持。
 
 - 阅读页翻页：合成 `ArrowLeft` / `ArrowRight` 键盘事件（页面原生监听）。
   壳侧有 110ms 翻页冷却、90ms 移动冷却防连发过冲。
+- **阅读页上下键：不判断横竖屏，直接试滚 + 读回**（`pageVertical`）。站点有两种排版 ——
+  分页（横屏双栏，底部有「上一页 / 下一页」）和竖屏长页（整章一张 canvas，文档可滚）。
+  做法是滚一屏后立刻读 `scrollTop`：变了就说明是长页、滚动成功；**没变**就当成
+  分页排版或已到章末，转成翻页。
+  - 为什么不按「文档高度 > 视口高度」去判：那是推断，阈值总得定，横屏下万一有几像素
+    溢出就会误判成长页；而且将来站点改版、换排版实现都可能推翻它。
+  - 为什么读回后还要判一次：`window.scrollTo` 有可能被站点拦掉（或被
+    `scroll-behavior:smooth` 变成动画），此时读回来就是没动，自然落到翻页分支，
+    **不会出现「按了没反应」的死角**。判据只依赖引擎自己的行为。
+  - `behavior:'instant'` 必须显式写：否则站点若设了 `scroll-behavior:smooth`，
+    紧接着读 `scrollTop` 还是旧值，会被自己误判成「没滚动」。
+  - 步长用 `clientHeight`（810）而不是 `innerHeight`（902）：后者会滚到 94% 屏，
+    行间重叠太少。滚到章末（`target === before`）继续按会发 `ArrowRight` 进下一章。
+  - 分页排版下这条分支读回没动 → 发 `ArrowRight` / `ArrowLeft`，与改动前完全一致；
+    长按会连发 repeat，JS 侧自带 350ms 节流，别翻页翻飞。
+- **`scrollAtCursor` 的 overflow 判断不能省**：只看 `scrollHeight > clientHeight` 会把
+  `overflow:visible` 的包裹层也算成可滚，对它 `scrollBy` 完全无效（scrollTop 恒为 0），
+  然后 `return` 掉，永远走不到 `window.scrollBy` —— 竖屏长页「滚动模式按了没反应」的根因。
 - 自由光标：方向键发 `{op:'cursorMove',dx,dy}`，**壳侧参数全是字符串，
   JS 端必须 `parseInt`**（number+string 会拼成 NaN，光标钉死在屏幕角落）。
   单按 14px 微调、长按 repeat 连发 40px 加速。

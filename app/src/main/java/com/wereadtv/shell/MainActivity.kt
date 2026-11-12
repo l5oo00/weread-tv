@@ -540,13 +540,20 @@ class MainActivity : Activity() {
             return super.dispatchKeyEvent(event)
         }
 
-        /* 阅读模式（默认进入）：方向键全部翻页（↑/→ 下一页，↓/← 上一页，
-           统一合成 ArrowLeft/ArrowRight，页面键盘监听只认这两个）；
+        /* 阅读模式（默认进入）：左右键翻页；上下键交给 js 分流 —— 竖屏长页
+           滚一屏，分页排版下仍是翻页（只有 js 看得到文档能不能滚，壳层不知道）。
            OK 进入焦点模式；菜单键进入光标模式 */
         if (reading && mode == Mode.READ) {
             when {
                 isDpad(key) -> {
-                    if (down) flip(key)
+                    if (down) {
+                        if (key == KeyEvent.KEYCODE_DPAD_UP || key == KeyEvent.KEYCODE_DPAD_DOWN) {
+                            sendToJs(jsCommand("pageV", "dir" to
+                                if (key == KeyEvent.KEYCODE_DPAD_UP) "up" else "down"))
+                        } else {
+                            flip(key)
+                        }
+                    }
                     return true
                 }
                 isOkKey(key) -> {
@@ -610,7 +617,7 @@ class MainActivity : Activity() {
         val now = SystemClock.uptimeMillis()
         if (now - lastFlipAt < FLIP_COOLDOWN_MS) return
         lastFlipAt = now
-        val next = key == KeyEvent.KEYCODE_DPAD_RIGHT || key == KeyEvent.KEYCODE_DPAD_DOWN
+        val next = key == KeyEvent.KEYCODE_DPAD_RIGHT
         val keyName = if (next) NEXT_KEY else PREV_KEY
         val code = if (next) NEXT_CODE else PREV_CODE
         sendToJs(jsCommand("key", "key" to keyName, "code" to code.toString()))
