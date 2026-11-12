@@ -100,10 +100,31 @@ KEY_PASSWORD=xxx
 release APK，附上选包说明并发布到 GitHub Releases，产物名为
 `WeReadTV-<tag>-v7a.apk` / `WeReadTV-<tag>-arm64.apk`。
 
+发版顺序建议如下（`main` 上有仓库规则，见下方说明，顺序反了要返工）：
+
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+# 1. 先升 versionCode / versionName，提交
+# 2. 推分支开 PR，等 build.yml 变绿
+git push origin main:refs/heads/release-x.y.z
+gh pr create --base main --head release-x.y.z
+
+# 3. 检查绿了再快进 main（同一 commit 已有通过的检查，规则放行）
+git push origin main
+
+# 4. 最后推 tag
+git tag -a v0.2.0 -F tag-message.txt      # 注释 tag，发布页标题取自这里
+git push origin v0.2.0
 ```
+
+> `main` 上启用了一条仓库规则（ruleset「保护 main 分支」）：必须 `build` 检查通过
+> 才能推送，且连仓库所有者也不能绕过。所以新提交不能直接 `git push origin main`
+> —— 会以 `push declined due to repository rule violations` 失败。
+>
+> tag 不受这条规则约束（tag 有单独的 ruleset，只禁止删除 / 移动已有 tag）。所以
+> **先推 tag 也能发布成功**，但 `main` 会落后于 tag，`origin/main` 上看不到发布内容。
+> 更隐蔽的是 `push.followTags` 默认开着时，那条失败的 `git push origin main`
+> 会顺手把本地 tag 一起推走，当场触发发布流程 —— 于是出现「main 没推上去，
+> Release 却已经出包」的现象。
 
 普通 push 只跑 `build.yml`（debug 包上传为 Actions Artifacts，保留 30 天），
 不会创建 Release。两个工作流都只给必要权限（`contents: read` / `write`），
@@ -130,8 +151,8 @@ CI 签名必须读仓库 Secrets：`ANDROID_KEYSTORE_BASE64`（keystore 的 base
 
 | 位置 | 例子 | 作用域 | 什么时候改 |
 |---|---|---|---|
-| `app/build.gradle.kts` `versionCode` | `1` | Android 系统判断能否覆盖安装（必须单调递增） | 每次正式发版 |
-| `app/build.gradle.kts` `versionName` | `0.1.0` | 展示给用户的版本、Release tag 名 | 每次正式发版 |
+| `app/build.gradle.kts` `versionCode` | `2` | Android 系统判断能否覆盖安装（必须单调递增） | 每次正式发版 |
+| `app/build.gradle.kts` `versionName` | `0.2.0` | 展示给用户的版本、Release tag 名 | 每次正式发版 |
 | `extension/manifest.json` `version` | `2.7` | WebExtension 自身版本标识，便于核对激活版本 | 改扩展时建议递增，不强制 |
 | `tv.js` 顶部 `V` | `13` | 脚本防重复注入标记，仅本文件内使用 | 改脚本时建议递增，不强制 |
 
