@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.wereadtv.shell"
-    compileSdk = 34                 // 本机现有 android-34，不必额外下 SDK 35
+    compileSdk = 36                 // GeckoView 140 要求 >=35；本机已有 android-36
 
     buildFeatures {
         buildConfig = true
@@ -75,6 +75,9 @@ android {
     // 其余告警（OldTargetApi / ChromeOsAbiSupport 等）保留，不掩盖真实问题。
     lint {
         disable.add("NotificationPermission")
+        // GeckoView 140 + compileSdk 36 下，AGP lint 的 Kotlin 分析器会因
+        // NonNullableMutableLiveDataDetector 自身类/接口不兼容而崩溃（与本 App 代码无关）。
+        disable.add("NullSafeMutableLiveData")
     }
 
     // 运行时故意不引任何依赖（含 AndroidX）：整个 App 只有一个 Activity + 一个 GeckoView。
@@ -86,9 +89,9 @@ dependencies {
 
     // 自带 Gecko 引擎（Firefox 同款）：实测那台电视的系统 WebView 是 Chromium 74，
     // 编译不了阅读器新用的 WebAssembly（bulk-memory），整页正文渲染不出来。
-    // 选 128 ESR 长支持版，按 abi flavor 分别依赖（见上方 productFlavors）。
-    "v7aImplementation"("org.mozilla.geckoview:geckoview-armeabi-v7a:128.0.20240725162350")
-    "arm64Implementation"("org.mozilla.geckoview:geckoview-arm64-v8a:128.0.20240725162350")
+    // 140 在真机上中文排版明显快于 128 ESR（正文首现 -6.6s），两个 abi 保持一致。
+    "v7aImplementation"("org.mozilla.geckoview:geckoview-armeabi-v7a:140.0.20250707120347")
+    "arm64Implementation"("org.mozilla.geckoview:geckoview-arm64-v8a:140.0.20250707120347")
 }
 
 kotlin {

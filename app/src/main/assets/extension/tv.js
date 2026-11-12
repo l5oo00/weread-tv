@@ -33,6 +33,55 @@
   'use strict';
   var V = 13;
 
+  /* ==== 阅读页首屏：两个同步第三方脚本推迟到正文首帧后补加载 ====
+   * 阅读页 SSR HTML 里 midas cashier.js（支付）和 wpa-1.0.5.js（风控/设备指纹）
+   * 都是无 defer/async 的同步 <script>，会阻塞 HTML 解析；wpa 还会拉 WASM 占主线程。
+   * 用 Gecko 的 beforescriptexecute 挡住它们的首次执行，正文首帧后再动态补 <script>
+   * 让它们完整跑一遍 —— 风控/账号校验相关请求不能丢，只是挪出首屏关键路径。
+   * 实测（固定书 d0b32ed0813abc2b3g0147b9、正式包 1440 双页）：
+   *   正文首现 39.2s → 37.3s / 36.9s，与「永久拦掉」的 37.5s 持平；
+   *   补加载后 chaos VM = function、WASM 资源 = 1、两个脚本均触发 load。
+   * 只在阅读页生效，首页与其它页面完全不受影响。
+   * 等 canvas 首现是必要的：load 后就补会慢 1.2s；60s 兜底保证异常页面也能补上。
+   */
+  (function () {
+    if (location.pathname.indexOf('/web/reader/') !== 0) return;
+    var s = document.createElement('script');
+    s.textContent = '(' + function () {
+      var pending = [];
+      document.addEventListener('beforescriptexecute', function (e) {
+        var t = e.target;
+        if (t && t.getAttribute && t.getAttribute('data-tv-reload')) return;
+        var u = (t && t.src) || '';
+        if (/midas.*cashier\.js|wpa-1\.0\.5\.js/.test(u)) {
+          e.preventDefault();
+          pending.push(u);
+        }
+      }, true);
+      function flush() {
+        pending.forEach(function (u) {
+          var n = document.createElement('script');
+          n.src = u;
+          n.async = true;
+          n.setAttribute('data-tv-reload', '1');
+          (document.head || document.documentElement).appendChild(n);
+        });
+        pending.length = 0;
+      }
+      var done = 0;
+      function go() { if (done) return; done = 1; flush(); }
+      var iv = setInterval(function () {
+        if (document.getElementsByTagName('canvas').length) {
+          clearInterval(iv);
+          setTimeout(go, 900);
+        }
+      }, 300);
+      setTimeout(function () { clearInterval(iv); go(); }, 60000);
+    }.toString() + ')();';
+    (document.documentElement || document.head).appendChild(s);
+    s.remove();
+  })();
+
   /* ==== 字体：熔断自愈 + 排版后补排 ====
    *
    * 站点阅读页 mounted 里 Promise.race([warmUp(), 10 秒定时]) 决定 ignoreFont：
