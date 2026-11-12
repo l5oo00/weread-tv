@@ -109,6 +109,21 @@ FREE / SCROLL 都不跨页面保持。
   所以 FREE 分支要自己清 `okLongFired` 并把这次抬起消费掉（不算点击）；
   否则退出 FREE 后第一次短按 OK 会被当成「长按已消费」吞掉。FREE 分支的 OK
   也要只认首次 DOWN，跟 SCROLL 一样，避免长按 repeat 连发点击。
+- **双击 OK 会触发 Gecko 的双击缩放**：OK → `injectTap` 是真实触摸，遥控连按两次
+  （间隔 ~150ms）在同一个点，APZ 按双击手势把整页放大，再双击缩回。危害有两个：
+  遥控没有捏合，放大后只能靠再双击碰运气；页面缩放后壳层按 `innerWidth` 换算的
+  点击坐标与画面内容错位（光标指 A、点下去落 B）。
+  关它用 `GeckoRuntimeSettings.Builder.doubleTapZoomingEnabled(false)`
+  （pref `apz.allow_double_tap_zooming`，runtime 级、全局生效，建 runtime 时设一次）。
+  **别去 `PanZoomController` / `GeckoSessionSettings` 里找** —— 这两个类里都没有
+  这个开关（`PanZoomController` 只有 `setIsLongpressEnabled`），我第一次就查漏在
+  这里，误判成"GeckoView 没有 API"，退而用了 `html,body,* { touch-action:manipulation }`。
+  那套 CSS 能用但只是网页侧补丁：要压在站点样式之上，还得靠 `*` 兜住
+  "UI 事件行为取命中元素与所有祖先的交集"，站点一旦自己写 `touch-action` 就可能破功。
+  **有原生开关就别用 CSS。**
+  注：`input keyevent` 连按实测 ~800ms，`input keyevent 23 23` 又是 0ms 间隔
+  （第二次 DOWN 会 `cancelPendingTapUp()` 把第一次的 UP 扔掉，只算一次点击），
+  **两种 adb 手法都复现不出双击**，只能靠遥控器手按验证。
 - **api 对象属性陷阱**：`handleNative` 里必须 `api.setMode(...)`，
   裸调 `setMode(...)` 的 ReferenceError 会被端口监听的 try/catch 静默吞掉
   （曾导致 mode 命令静默失效）。

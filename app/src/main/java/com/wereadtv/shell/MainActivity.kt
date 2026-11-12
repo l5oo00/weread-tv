@@ -109,6 +109,11 @@ class MainActivity : Activity() {
             // 发布版关闭，避免日志刷屏与暴露远程调试 socket。
             .consoleOutput(BuildConfig.DEBUG)
             .remoteDebuggingEnabled(BuildConfig.DEBUG)
+            // 双击缩放（pref: apz.allow_double_tap_zooming）关掉。遥控器连按两次 OK
+            // 就是同一点上两次真实触摸，APZ 会当成双击手势把整页放大，再双击缩回。
+            // 危害有两个：遥控没有捏合，放大后只能靠再双击碰运气；页面缩放后
+            // 壳层按 innerWidth 换算的点击坐标与画面内容错位（光标指 A、落点 B）。
+            .doubleTapZoomingEnabled(false)
             // 全站缩放方案：DESKTOP 视口宽 980 → 1440。站点按 1440 排版
             // 原生出四列/阅读页双页，整体缩到 0.667 铺满 960×540。
             // 旧 WebView 版靠 meta viewport 注入，Gecko 的 MVM 会把它重置掉，
