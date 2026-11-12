@@ -94,44 +94,41 @@ KEY_PASSWORD=xxx
 本项目不发 Android App Bundle（AAB）：AAB 必须走 Google Play 等商店托管才能安装，
 无法直接侧载到电视。面向「下载 apk 侧装」场景，因此按架构出两个独立 APK。
 
-### 打 tag 自动发布
+### 合并到 main 自动发版
 
-推一个 `v*` 标签会触发 `.github/workflows/release.yml`：构建 v7a / arm64 两个
-release APK，附上选包说明并发布到 GitHub Releases，产物名为
-`WeReadTV-<tag>-v7a.apk` / `WeReadTV-<tag>-arm64.apk`。
+`.github/workflows/release.yml` 在 push 到 `main` 时触发。它先读
+`app/build.gradle.kts` 的 `versionName` 拼出 `v<version>`：
 
-发版顺序建议如下（`main` 上有仓库规则，见下方说明，顺序反了要返工）：
+- tag **已存在** → 这一版发过了，整体跳过（文档、修复这类不发版的合并就落到这里）；
+- tag **不存在** → 构建 v7a / arm64 两个 release APK，校验签名、生成 `SHA256SUMS`，
+  最后用 `gh release create --target` 一步创建 tag 和 Release。
+
+所以发版只需改版本号、走一次 PR，**本地不用打 tag**：
 
 ```bash
-# 1. 先升 versionCode / versionName，提交
+# 1. 升版本号（app/build.gradle.kts）：versionCode +1，versionName 改成新版本
 # 2. 推分支开 PR，等 build.yml 变绿
-git push origin main:refs/heads/release-x.y.z
-gh pr create --base main --head release-x.y.z
+git push origin main:refs/heads/release-0.3.0
+gh pr create --base main --head release-0.3.0
 
-# 3. 检查绿了再快进 main（同一 commit 已有通过的检查，规则放行）
+# 3. 合并进 main 的那次 push 就是发版，tag 与 Release 都由 CI 建
 git push origin main
-
-# 4. 最后推 tag
-git tag -a v0.2.0 -F tag-message.txt      # 注释 tag，发布页标题取自这里
-git push origin v0.2.0
 ```
 
-> `main` 上启用了一条仓库规则（ruleset「保护 main 分支」）：必须 `build` 检查通过
-> 才能推送，且连仓库所有者也不能绕过。所以新提交不能直接 `git push origin main`
-> —— 会以 `push declined due to repository rule violations` 失败。
->
-> tag 不受这条规则约束（tag 有单独的 ruleset，只禁止删除 / 移动已有 tag）。所以
-> **先推 tag 也能发布成功**，但 `main` 会落后于 tag，`origin/main` 上看不到发布内容。
-> 更隐蔽的是 `push.followTags` 默认开着时，那条失败的 `git push origin main`
-> 会顺手把本地 tag 一起推走，当场触发发布流程 —— 于是出现「main 没推上去，
-> Release 却已经出包」的现象。
+> **为什么不本地打 tag**：`main` 上有一条仓库规则（ruleset「保护 main 分支」）要求
+> `build` 检查通过才能推送，连仓库所有者也不能绕过 —— 新提交直接
+> `git push origin main` 会以 `push declined due to repository rule violations` 失败。
+> tag 不受这条规则约束，先推 tag 就会让发布早于 `main` 落地；更隐蔽的是
+> `push.followTags` 开着时，那条被拒绝的 `git push origin main` 会顺手把本地 tag
+> 推走，当场触发发布 —— 结果就是「main 没推上去，Release 却已经出包」。
+> 把 tag 交给 CI，时序问题就不存在了。
 
-普通 push 只跑 `build.yml`（debug 包上传为 Actions Artifacts，保留 30 天），
-不会创建 Release。两个工作流都只给必要权限（`contents: read` / `write`），
-第三方 action 全部 pin 到 commit SHA。
+`build.yml` 仍会在每次 push `main` / PR 时跑（`node --check`、单测、lint、两个 debug
+APK 上传为 Actions Artifacts，保留 30 天）。两个工作流都只给必要权限
+（`contents: read` / `write`），第三方 action 全部 pin 到 commit SHA。
 
 发布产物附带 `SHA256SUMS`，并在发布前用 `apksigner verify` 校验每个 APK 的
-签名；同名 tag 若已存在 Release，工作流会**直接失败**而不是静默覆盖已发布的
+签名；同名 Release 若已存在，工作流会**直接失败**而不是静默覆盖已发布的
 APK。下载后建议校验：
 
 ```bash

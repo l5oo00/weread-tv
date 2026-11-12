@@ -1,25 +1,64 @@
 name: Release APK
 
-# 打 v* tag 时构建两个架构的 release APK 并发布到 GitHub Releases。
-# 普通 push 只跑 build.yml（debug 包 + Actions artifact），不生成正式发布。
+# 合进 main 后自动发版：读 app/build.gradle.kts 的 versionName，对应的 tag
+# 不存在才构建 v7a / arm64 两个 release APK 并发布到 GitHub Releases，
+# tag 由 CI 在这一步创建（本地不再手动打 tag，避免 tag 先于 main 落地）。
+#
+# 没改 versionName 的普通 push（文档、测试）会被 version job 判为「已发过」
+# 直接跳过，只跑 build.yml 出 debug 包。
 on:
   push:
-    tags: [ 'v*' ]
+    branches: [ main ]
 
 permissions:
   contents: write
 
-# 同一 tag 的并发 run 排队而不是取消：发布流程中断比多等几分钟更麻烦。
+# 发布流程排队而不是取消：同一分支上连续合并时，中断一次发布会留下半成品，
+# 多等几分钟更划算。
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-main
   cancel-in-progress: false
 
 jobs:
+  # 先判断这一版发过没有，再决定要不要真的构建 —— 版本号没变就不该重发，
+  # 否则每次 push main 都会产出一个同名 Release。
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+      skip: ${{ steps.ver.outputs.skip }}
+    steps:
+      # 第三方 action 一律 pin 到 commit SHA（注释保留可读版本号，便于日后升级）
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          fetch-depth: 0        # 要拿到历史 tag 才能判断这一版发没发过
+
+      - name: Read versionName and check tag
+        id: ver
+        run: |
+          set -euo pipefail
+          VER=$(sed -n 's/^[[:space:]]*versionName[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' app/build.gradle.kts | head -1)
+          if [ -z "$VER" ]; then
+            echo "::error::从 app/build.gradle.kts 读不到 versionName"
+            exit 1
+          fi
+          TAG="v$VER"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$TAG 已经发布过，本次跳过发版"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::准备发布 $TAG（$GITHUB_SHA）"
+          fi
+
   release:
+    needs: version
+    if: needs.version.outputs.skip == 'false'
     # 与 build.yml 保持一致，固定镜像避免 Ubuntu 26 迁移导致 SDK 环境变化
     runs-on: ubuntu-24.04
     steps:
-      # 第三方 action 一律 pin 到 commit SHA（注释保留可读版本号，便于日后升级）
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
@@ -50,7 +89,7 @@ jobs:
         run: sed -i 's#mirrors.cloud.tencent.com/gradle/#services.gradle.org/distributions/#' gradle/wrapper/gradle-wrapper.properties
 
       # 发布产物必须可验证：缺签名密钥时直接失败，绝不现场随机生成一把，
-      # 否则同一 tag 每次重跑都可能产出不同签名的 APK，用户无法覆盖安装/验包。
+      # 否则同一版本每次重跑都可能产出不同签名的 APK，用户无法覆盖安装/验包。
       - name: Prepare signing key
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -87,7 +126,7 @@ jobs:
 
       - name: Prepare release assets
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
           mkdir -p dist
           cp app/build/outputs/apk/v7a/release/app-v7a-release.apk   "dist/WeReadTV-${TAG}-v7a.apk"
@@ -110,7 +149,7 @@ jobs:
 
       - name: Generate release notes
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
           PREV=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
           {
@@ -155,19 +194,21 @@ jobs:
           } > release-notes.md
           cat release-notes.md
 
+      # tag 在这一步才创建（--target 让 git 指向本次构建的 commit）。
+      # 放在最后的好处：前面任何一步失败都不会留下「有 tag 没产物」的状态，
+      # 修好再 push 一次就能重发（version job 看到 tag 不存在，仍会放行）。
       # 直接用 runner 自带的 gh CLI，不引第三方 action，避免又踩到版本落后于
       # runner 的坑（setup-android v3 就是这样挂的）。
-      # 同名 tag 重推时拒绝 --clobber：静默替换已发布 APK 会让用户下到不同签名的包。
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "::error::Release $TAG 已存在，拒绝覆盖已发布产物。如需重发，请先手动删除该 Release 或使用新 tag。"
+            echo "::error::Release $TAG 已存在，拒绝覆盖已发布产物。如需重发，请先删除该 Release 并删掉对应 tag。"
             exit 1
           fi
           gh release create "$TAG" dist/*.apk dist/SHA256SUMS \
+            --target "$GITHUB_SHA" \
             --title "WeReadTV $TAG" \
-            --notes-file release-notes.md \
-            --verify-tag
+            --notes-file release-notes.md
