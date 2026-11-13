@@ -82,8 +82,17 @@ FREE / SCROLL 都不跨页面保持。
 ① 可见的 `.reader_float_panel_header_backBtn` → 点返回（书评详情这类子页回列表）；
 ② 可见的关闭按钮（`_closeBtn` / `search_panel_header_close_wrapper` / `wr_dialog_closeButton`）；
 ③ 都没有就点 `.wr_mask` 遮罩空白处（站点自己的「点外面关掉」），x 取面板外侧的中点。
+**图片放大层**（点正文插图弹出，Viewer.js，`.viewer-container.viewer-backdrop`）没有
+返回 / 关闭按钮也不铺 `.wr_mask`，走单独一支：点屏幕四角（内缩 10px）的空白 —— 放大图
+居中显示且可拖动，四角逐个检查挑一个不在图上的（先上角后下角，底边偶有标题条）；
+全被图盖住（1:1 拉满）就放弃，返回键走 `closeModal` 兜底。点图上是缩放，落点离图至少
+留 8px，别把「关掉」变成「放大」。
 面板按钮有 isTrusted 守卫，只能靠壳层 `injectTap` 注真实触摸，所以是「上报坐标」而不是 JS 点。
 两个状态都**不去重、每次 DOM 变化重发**：漏一次就会退化成合成 `.click()`，面板关不掉（真机踩过）。
+**放大层容器自带 tabindex，会被 `muteExcept` 的选择器捞进来**；它关闭后节点不删
+（`viewer-hide` 常驻 DOM），隐藏态不算弹层就会被 mute 上，重开就是 pointer-events:none，
+点空白 / 返回键注入的点击全部穿透，永远关不掉（真机踩过；自由光标没事是因为
+`clearMuted` 全清了）。所以 `muteExcept` 对 `.viewer-container` 整棵子树豁免。
 
 - 阅读页翻页：合成 `ArrowLeft` / `ArrowRight` 键盘事件（页面原生监听）。
   壳侧有 110ms 翻页冷却、90ms 移动冷却防连发过冲。

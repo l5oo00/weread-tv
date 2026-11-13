@@ -31,7 +31,7 @@
  */
 (function () {
   'use strict';
-  var V = 13;
+  var V = 15;
 
   /* ==== 阅读页首屏：两个同步第三方脚本推迟到正文首帧后补加载 ====
    * 阅读页 SSR HTML 里 midas cashier.js（支付）和 wpa-1.0.5.js（风控/设备指纹）
@@ -238,10 +238,13 @@
    *   ② 没有返回但有关闭按钮的 → 点关闭；
    *   ③ 都没有的（目录、字体这类）→ 点遮罩空白处，也就是站点自己的「点外面关掉」。
    * 面板里的按钮带 isTrusted 守卫，合成点击一律无效 —— 所以只回报坐标，
-   * 由壳层注入真实触摸，和右侧工具栏同一套办法。 */
+   * 由壳层注入真实触摸，和右侧工具栏同一套办法。
+   * 图片放大层（点正文插图弹出，Viewer.js）不是 wr_mask 家族：全屏
+   * .viewer-container，点空白关闭、点图上缩放，落点单独算（见 panelClosePoint）。 */
   var PANEL_ROOTS = '.reader_float_panel_container, .readerCatalog, .readerNotePanel, ' +
     '.readerAIChatPanel, .font-panel-content, .search_panel, .top_reviews_panel, ' +
-    '.reviews_panel, .reader_common_dialog_wrapper, .wr_dialog';
+    '.reviews_panel, .reader_common_dialog_wrapper, .wr_dialog, ' +
+    '.viewer-container.viewer-backdrop';
   var PANEL_CLOSE = '.reader_float_panel_header_closeBtn, ' +
     '.search_panel_header_close_wrapper, .wr_dialog_closeButton';
   var PANEL_BACK = '.reader_float_panel_header_backBtn';
@@ -275,6 +278,26 @@
     if (!p) return null;
     var el = p.back || p.close;
     if (el) { var b = rectOf(el); return { x: b.cx, y: b.cy }; }
+    /* 图片放大层（Viewer.js）：全屏 container，点空白（canvas 露出的地方）关闭、
+       点图上是缩放。放大图居中显示，屏幕四角（内缩 10px）几乎总有空白 ——
+       角落要落在图上，必须左右、上下两个方向都贴死屏幕边（基本只有 1:1
+       拉满才这样），比左右/上下边中点鲁棒。图可拖动，四角逐个检查挑一个
+       不在图上的（先上角后下角：底边偶有 viewer-footer 标题条）；
+       全被盖住就放弃，返回键走 closeModal 兜底。 */
+    if (p.root && p.root.className.indexOf('viewer-container') >= 0) {
+      var img = shownIn('.viewer-move', p.root);
+      if (!img) return null;
+      var r = rectOf(img), corners = [
+        { x: 10, y: 10 }, { x: innerWidth - 10, y: 10 },
+        { x: 10, y: innerHeight - 10 }, { x: innerWidth - 10, y: innerHeight - 10 }
+      ], ci;
+      for (ci = 0; ci < 4; ci++) {
+        var c = corners[ci];
+        if (c.x < r.x - 8 || c.x > r.x + r.w + 8 ||
+            c.y < r.y - 8 || c.y > r.y + r.h + 8) return { x: c.x, y: c.y };
+      }
+      return null;
+    }
     if (!p.mask) return null;
     var m = rectOf(p.mask), r = p.root ? rectOf(p.root) : null, x;
     /* 落点要在遮罩上、且不被面板盖住：面板靠右就点左侧，靠左就点右侧。
@@ -521,6 +544,15 @@
     for (var j = 0; j < els.length; j++) {
       var el = els[j];
       if (modal && (modal === el || modal.contains(el))) continue;
+      /* 图片放大层（Viewer.js）容器自带 tabindex，会被选择器捞进来；它关闭后
+         节点不删（viewer-hide 常驻 DOM），下次 apply 时它不 shown、不算弹层，
+         就被 mute 上 —— 重开就是 pointer-events:none，点空白/返回键注入的点击
+         全部穿透到下层阅读页，放大层永远关不掉（自由光标没事：clearMuted
+         全清了）。放大层整棵子树永不 mute，顺手清掉残留的 class。 */
+      if (el.closest && el.closest('.viewer-container')) {
+        el.classList.remove('__tv_muted');
+        continue;
+      }
       el.setAttribute('tabindex', '-1');
       if (list.indexOf(el) < 0 && !insideCardLink(el, list)) el.classList.add('__tv_muted');
       else el.classList.remove('__tv_muted');
