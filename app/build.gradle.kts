@@ -15,8 +15,8 @@ android {
         applicationId = "com.wereadtv.shell"
         minSdk = 23                 // Android 6.0，覆盖绝大多数电视盒子
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
     }
 
     // 按 abi 出包，自适应机型：32 位老盒子选 v7a，64 位电视选 arm64。
